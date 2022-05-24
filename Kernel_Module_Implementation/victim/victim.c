@@ -9,9 +9,10 @@
 
 #define exist_capabilitylist_num 0
 #define capability_len 60
+#define PROTOCOL_PORT 80
 
-char mbox_ip[15] = "192.168.1.174";
-char victim_ip[15] = "192.168.2.253";
+char mbox_ip[15] = "10.1.1.2";
+char victim_ip[15] = "10.1.1.1";
 unsigned int mbox_networkip = 0;
 unsigned int victim_networkip = 0;
 
@@ -68,14 +69,14 @@ unsigned int insertCapabilityList(unsigned int srcaddr){
     struct capability_header *h = NULL;
 
     if ((h = kmalloc(sizeof(struct capability_header), GFP_KERNEL)) != NULL){
-	printk(KERN_INFO "insertCapabilityList===>malloc and create capability header:%u\n", srcaddr);
+	// printk(KERN_INFO "insertCapabilityList===>malloc and create capability header:%u\n", srcaddr);
 	h->saddr = srcaddr;
 	h->first = NULL;
 	h->end = NULL;
 	h->next = NULL;
 
     }else{
-	printk(KERN_INFO "malloc capabilitylist failed.\n");
+	// printk(KERN_INFO "malloc capabilitylist failed.\n");
 	return 0;
     }
 
@@ -147,6 +148,7 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
      * Handling all packets targetting the victim
      */
     if(iph->daddr == victim_networkip) {
+		// printk(KERN_INFO "Received packet targeting %d.\n", iph->daddr);
 	/*
 	 * Strip the outer IP/UDP header
 	 * In some case, the linux kernel will strip packets for us :) 
@@ -155,7 +157,7 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
 
 	    // remove the outer IP and UDP header
 	    if (skb->len < (sizeof(struct iphdr) + sizeof(struct udphdr) + 40)) {
-		printk(KERN_INFO "Packets without encapsulation !!!!");
+		// printk(KERN_INFO "Packets without encapsulation !!!!");
 		return NF_ACCEPT;
 	    } 
 
@@ -177,7 +179,7 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
 	    tcplen = skb->len - ip_hdrlen(skb);
 
 	    // irrelevent packets
-	    if (ntohs(tcph->dest) != 9877 || tcph->res1 != 0xf) return NF_ACCEPT;
+	    if (ntohs(tcph->dest) != PROTOCOL_PORT || tcph->res1 == 0x0) return NF_ACCEPT;
 
 	    spin_lock_irq(&mylock);
 
@@ -195,7 +197,7 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
 		    h->next = NULL;
 
 		}else{
-		    printk(KERN_INFO "malloc capability_header fail.\n");
+		    // printk(KERN_INFO "malloc capability_header fail.\n");
 		}
 
 		if(header == NULL) {
@@ -213,7 +215,7 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
 		memcpy(p->code, (skb->data + skb->len - capability_len), capability_len);
 
 		cap = (struct capability *)p->code;
-		printk(KERN_INFO "skb->len:%u skb->data_len:%u tailroom:%u kmalloc and copy into cap->id:%u cap->saddr:%u cap->timestamp:%lu cap->code:%s\n", skb->len, skb->data_len, skb->end - skb->tail, cap->id, cap->saddr, cap->timestamp, cap->code);
+		// printk(KERN_INFO "UPDATE: skb->len:%u skb->data_len:%u tailroom:%u kmalloc and copy into cap->id:%u cap->saddr:%u cap->timestamp:%lu cap->code:%s\n", skb->len, skb->data_len, skb->end - skb->tail, cap->id, cap->saddr, cap->timestamp, cap->code);
 
 		p->next = NULL;
 	    }			
@@ -286,7 +288,7 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 	/*
 	 * Carry capability feedbacks using ACK packets
 	 */
-	if(iph->saddr == victim_networkip && ntohs(tcph->source) == 9877 && tcph->ack)
+	if(iph->saddr == victim_networkip && ntohs(tcph->source) == PROTOCOL_PORT && tcph->ack)
 	{			
 	    //printk(KERN_INFO "ADD===>Before:len:%0x tailroom:%0x head:%0x data:%0x tail:%0x end:%0x data_len:%0x\n", skb->len,skb->end-skb->tail, skb->head,skb->data, skb->tail, skb->end, skb->data_len);
 
@@ -296,10 +298,14 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 	     * The number of packets carried in the ACK is count
 	     */
 	    f = searchCapabilityHeader(iph->daddr);
+		// if(!f)
+		// 	printk(KERN_INFO "Not found corresponding capability header!.\n");
 	    if(f != NULL){
 		while((f->first != NULL) && (skb->end - skb->tail) >= capability_len && count < 0x03){		
 		    temp = f->first;
+			// printk(KERN_DEBUG "skb->len: %u, linear length = %u, real length = %u\n", skb->len, skb->end - (unsigned int)skb->head, skb->tail-(unsigned int)skb->data);
 		    secure = skb_put(skb, capability_len);
+			// printk(KERN_INFO "Inserting capability into packet pointer %p.\n", secure);
 
 		    cap = (struct capability *)temp->code;					
 		    //printk(KERN_INFO "skb->len:%u skb->data_len:%u add num:%u saddr:%u timestamp:%lu code:%s in ACK <%u>\n", skb->len, skb->data_len, cap->num, cap->saddr, cap->timestamp, cap->code, count);					
@@ -314,7 +320,7 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 
 	    }
 	    //printk(KERN_INFO "count:%u\n", count);
-	    tcph->res1 = count;
+	    tcph->res1 = (count<<1);
 
 	    //printk(KERN_INFO "ADD===>After:len:%0x tailroom:%0x head:%0x data:%0x tail:%0x end:%0x data_len:%0x\n", skb->len,skb->end-skb->tail, skb->head,skb->data, skb->tail, skb->end, skb->data_len);
 

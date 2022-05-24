@@ -4,6 +4,9 @@
 #include <linux/netfilter_ipv4.h>
 #include <linux/ip.h>
 #include <net/tcp.h>
+// #include <netinet/in.h>
+// #include <sys/socket.h>
+// #include <arpa/inet.h>
 #include <net/ip.h>
 
 /*
@@ -58,16 +61,18 @@
 int IP_in_UDP_ENCAP = 0; 
 
 // If you did have separate machines for senders and mboxes, please set this control variable to 1. Otherwise, if you combine sender and mbox together in one box, please disable this variable.  
-int redirect_enabled = 0; 
+int redirect_enabled = 1; 
 
 // This variable is for debugging. Enable it to test the full functionality of MiddlePolice.
 int Add_Trim_Capability = 1;
 
+#define PROTOCOL_PORT 80
+
 /*
  * Global variables
  */
-char mbox_ip[15] = "192.168.1.174";
-char victim_ip[15] = "192.168.2.253";
+char mbox_ip[15] = "10.1.1.2";
+char victim_ip[15] = "10.1.1.1";
 unsigned int mbox_networkip = 0;
 unsigned int victim_networkip = 0;
 
@@ -96,17 +101,18 @@ struct cTable{
 struct iTable{
     unsigned int f; // Source identifier
     unsigned long TA; // The start time of the current detection period
-    unsigned int PID; // Capability ID
-    unsigned long NR; // The number of received packets from NR
+    unsigned int PID; // Capability ID, maximum number of distinct capabilities generated for this source
+    unsigned long NR; // The number of received packets from this source
     unsigned int ND; // The number of dropped packets from f by mbox
     unsigned int WR; // The number of privileged packets allowed for f
     char WV[128]; // For computing the packet loss rates
-    unsigned long LR; // Historical loss rates
+    unsigned long LR; // Historical loss rates (LLR)
     unsigned int i; // Experimentally used: count the number of received packets
     struct iTable *next;
 };
 
 
+// YM: iTable here is a one way linked list, containing all iTable elements
 struct iTable *iTable_header = NULL;
 struct iTable *iTable_tail = NULL;
 
@@ -193,11 +199,11 @@ void computeSLR(struct cTable *p, unsigned int id, unsigned int saddr, unsigned 
     } else {
 	// compute SLR
         if(load_cTable != 0 && p->n == cTable_num){
-	    printk(KERN_INFO "cTable###send %u capabilities receive %u capabilities at this interval.\n", p->n, p->m);
+	    // printk(KERN_INFO "cTable###send %u capabilities receive %u capabilities at this interval.\n", p->n, p->m);
 	    if (p->n > p->m) SLR_loss_rate = 100 * (p->n - p->m) / p->n;
 	    else SLR_loss_rate = 0;
 
-	    printk(KERN_INFO "SLR %u \n", SLR_loss_rate);
+	    // printk(KERN_INFO "SLR %u \n", SLR_loss_rate);
 
 	    // clear cTable
       	    load_cTable = 0;
@@ -1060,23 +1066,25 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
 	tcph = (struct tcphdr *)((__u32 *)iph+ iph->ihl);		
 	tcplen = skb->len - ip_hdrlen(skb);
 
-	if (ntohs(tcph->source) == 9877 && tcph->ack && (tcph->res1 != 0))
+	if (ntohs(tcph->source) == PROTOCOL_PORT && tcph->ack && ((tcph->res1>>1) != 0))
 	{
 	    spin_lock_irq(&mylock);	
 	    temp = searchiTable(iph->daddr);
 
 	    if((temp != NULL) && jiffies <= (temp->TA + detection_period) && temp->i <= Th_cap){
-		res1 = tcph->res1;
+		res1 = (tcph->res1>>1);
+		// printk(KERN_INFO "Reading res1 = %u.\n", res1);
 
 		/*
 		 * The number of capability feedback in the ACK packet is determined by the TCP option res1
 		 */
+		skb_linearize(skb);
 		while(res1 >= 1){
 		    
 		    // Inspect capability feedback 
 		    memcpy(getCapability, (skb->data + skb->len - res1*capability_len), capability_len);
 		    cap = (struct capability *)getCapability;
-		    printk(KERN_INFO "get capability skb->len:%u skb->data_len:%u id=%u saddr=%u timestamp=%lu code=%s <res1:%u>\n",skb->len, skb->data_len, cap->id, cap->saddr, cap->timestamp, cap->code, res1);
+		    printk(KERN_INFO "get capability skb->len:%u skb->data_len:%u id=%u saddr=%pI4 timestamp=%lu code=%s <res1:%u>\n",skb->len, skb->data_len, cap->id, &(cap->saddr), cap->timestamp, cap->code, res1);
 
 		    /*
 		     * For experimental purpose, simulate the capability verification
@@ -1095,10 +1103,12 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
 		}
 
 		// Trim the capability feedback to reveal the original payload
-		skb_trim(skb, skb->len - tcph->res1 * capability_len);
+		// printk(KERN_INFO "The skb has length %u, trimming to be %u.\n", skb->len, skb->len - (tcph->res1>>1) * capability_len);
+		// skb_linearize(skb);
+		skb_trim(skb, skb->len - (tcph->res1>>1) * capability_len);
 
 		// Recompute checksum to ensure correctiveness
-		iph->tot_len = iph->tot_len - htons(tcph->res1 * capability_len);
+		iph->tot_len = iph->tot_len - htons((tcph->res1>>1) * capability_len);
 		tcplen = skb->len - ip_hdrlen(skb);
 		tcph->check = 0; 
 		tcph->check = tcp_v4_check(tcplen, iph->saddr, iph->daddr, csum_partial(tcph, tcplen, 0));
@@ -1119,7 +1129,7 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
     else if (redirect_enabled && iph->daddr == mbox_networkip && iph->protocol == IPPROTO_TCP) {
 	tcph = (struct tcphdr *)((__u32 *)iph+ iph->ihl);
 	tcplen = skb->len - ip_hdrlen(skb);
-	if(ntohs(tcph->dest) == 9877){
+	if(ntohs(tcph->dest) == PROTOCOL_PORT){
         spin_lock_irq(&mylock);
 	// redirect the traffic to the victim
 	iph->daddr = victim_networkip; 
@@ -1219,7 +1229,7 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 	    tcplen = skb->len - ip_hdrlen(skb);
 
 	    // irrelevent packets
-	    if (ntohs(tcph->dest) != 9877 || tcph->fin) return NF_ACCEPT;
+	    if (ntohs(tcph->dest) != PROTOCOL_PORT || tcph->fin) return NF_ACCEPT;
 
 
 	    // Handle inner TCP packets
@@ -1234,7 +1244,7 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 
 	    if (temp == NULL){
 		if ((temp = kmalloc(sizeof(struct iTable), GFP_KERNEL)) != NULL){
-		    printk(KERN_INFO "kmalloc and create one new iTable for one new client\n");
+		    // printk(KERN_INFO "kmalloc and create one new iTable for one new client\n");
 		    temp->f = iph->saddr;
 		    temp->TA = jiffies;
 		    temp->PID = 0;
@@ -1245,7 +1255,8 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 		    temp->LR = 0;				
 		    temp->next = NULL;
 		}else{
-		    printk(KERN_INFO "create new iTable fail\n");		
+		    // printk(KERN_INFO "create new iTable fail\n");	
+			spin_unlock_irq(&mylock);
 		    return NF_ACCEPT;
 		}
 
@@ -1263,7 +1274,7 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 
 	    // reset the flow entry if the flow entry is outdated
 	    if ((jiffies - temp->TA) > 10 * detection_period) {
-		printk (KERN_INFO "RETSET for the sender\n");
+		// printk (KERN_INFO "RETSET for the sender\n");
 
 		temp->TA = jiffies;
 		temp->PID = 0;
@@ -1281,11 +1292,12 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 	    /*
 	     * Best effort handling
 	     */
-	    if (temp->NR > temp->WR) {
+	    if (temp->NR > temp->WR) {// YM: If the privilaged packet credit is used up, why all blocking?
 		if ((temp->LR > LLR_thres) || (SLR_loss_rate > SLR_thres)) {
 		    printk(KERN_INFO "Best effort rate limiting\n");
 		    printk(KERN_INFO "SLR loss rate %u\n", SLR_loss_rate);
 		    temp->ND += 1;
+			spin_unlock_irq(&mylock);
 		    return NF_DROP;
 		}
 	    }
@@ -1294,7 +1306,7 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 	     * New detection period: Compute iTable entries
 	     */
 	    if ((jiffies - temp->TA) > detection_period) { 
-		printk (KERN_INFO "New period for sender %u\n", temp->f);
+		printk(KERN_INFO "New period for sender %pI4\n", &(temp->f));
 		printk(KERN_INFO "PID %u\n", temp->PID);
 		printk(KERN_INFO "received capability %u\n", temp->i);
 		printk(KERN_INFO "early drop %u\n", temp->ND);
@@ -1311,7 +1323,7 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 		    net_loss = temp->ND + (temp->PID - temp->i);
 		}
 		else net_loss = 0;
-		printk(KERN_INFO "net_loss %u\n", net_loss);
+		// printk(KERN_INFO "net_loss %u\n", net_loss);
 
 		if (temp->NR < 5) {
 		    loss_rate = beta * temp->LR / 100;
@@ -1343,7 +1355,10 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 	    if(jiffies <= (temp->TA + detection_period - Th_rtt) && temp->PID < Th_cap){
 		//If data_len is not 0, need sk_buff linerize.  zero is returned and the old skb data released.	
 		skb_linearize(skb); 		
-		printk(KERN_INFO "INSERT====>Before:Insert %u capability len:%0x data_len:%u tailroom:%u head:%0x data:%0x tail:%0x end:%0x iplen:%x\n", temp->PID, skb->len, skb->data_len, skb->end-skb->tail, skb->head,skb->data, skb->tail, skb->end, ntohs(iph->tot_len));
+		// printk(KERN_INFO "INSERT====>Before:Insert %u\
+		// 	capability len:%0x data_len:%u tailroom:%u \
+		// 	head:%0x data:%0x tail:%0x end:%0x iplen:%x\n",
+		// 	temp->PID, skb->len, skb->data_len, skb->end-skb->tail, skb->head,skb->data, skb->tail, skb->end, ntohs(iph->tot_len));
 		
 		if((skb->end - skb->tail) < capability_len) {
 		    spin_unlock_irq(&mylock);	    
@@ -1364,7 +1379,7 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 		// Append capability at the footer of the skb
 		secure = skb_put(skb, capability_len);
 		memcpy(secure, (char *)cap, capability_len);
-		tcph->res1 = 0xf;
+		tcph->res1 = 0xe;
 
 		// cTable Handling
 		count = insertcTable(ctab, cap->saddr, cap->id, cap->timestamp, cap->code);
@@ -1403,9 +1418,10 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
 		 */
 		// headroom check
 		if ((skb_headroom(skb) < (sizeof(struct iphdr) + sizeof(struct udphdr)))) {
-		    printk(KERN_INFO "headroom is not enough for iphdr and udphdr");
+		    // printk(KERN_INFO "headroom is not enough for iphdr and udphdr");
 		    if (pskb_expand_head(skb, (sizeof(struct iphdr) + sizeof(struct udphdr)), 0, GFP_ATOMIC) != 0) { 
-			printk(KERN_INFO "headeroom is not enough");
+			// printk(KERN_INFO "headeroom is not enough");
+			spin_unlock_irq(&mylock);
 			return NF_DROP;
 		    } 
 		} 
@@ -1456,7 +1472,7 @@ unsigned int hook_func_out(unsigned int hooknum, struct sk_buff *skb, const stru
     else if (redirect_enabled && iph->saddr == victim_networkip && iph->protocol == IPPROTO_TCP) {
 	tcph = (struct tcphdr *)((__u32 *)iph + iph->ihl);
 	
-	if (ntohs(tcph->source) == 9877 && tcph->ack) {
+	if (ntohs(tcph->source) == PROTOCOL_PORT && tcph->ack) {
 	    spin_lock_irq(&mylock);
 	    iph->saddr = mbox_networkip;
 
