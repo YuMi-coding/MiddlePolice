@@ -141,13 +141,12 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
 	 * Handling all packets targetting the victim
 	 */
 	if(iph->daddr == victim_networkip) {
-		// printk(KERN_INFO "Received packet targeting %d.\n", iph->daddr);
-	/*
-	 * Strip the outer IP/UDP header
-	 * In some case, the linux kernel will strip packets for us :) 
-	 */
+		// printk(KERN_INFO "Received packet targeting %pI4.\n", &(iph->daddr));
+		/*
+		* Strip the outer IP/UDP header
+		* In some case, the linux kernel will strip packets for us :) 
+		*/
 		if (iph->protocol == IPPROTO_UDP) {
-
 			// remove the outer IP and UDP header
 			if (skb->len < (sizeof(struct iphdr) + sizeof(struct udphdr) + 40)) {
 				// printk(KERN_INFO "Packets without encapsulation !!!!");
@@ -165,7 +164,7 @@ unsigned int hook_func_in(unsigned int hooknum, struct sk_buff *skb, const struc
 		}
 	
 
-	// interpret inner TCP packets
+		// interpret inner TCP packets
 		if(iph->protocol == IPPROTO_TCP) {
 			tcph = (struct tcphdr *)((__u32 *)iph+ iph->ihl);	
 			tcplen = skb->len - ip_hdrlen(skb);
@@ -352,6 +351,8 @@ int init_module()
 	nf_hook_out.pf = PF_INET;
 	nf_hook_out.priority = NF_IP_PRI_FIRST;
 	nf_register_hook(&nf_hook_out);
+
+	printk(KERN_INFO "Victim kernel module loaded!\n");
 
 	return 0;
 }

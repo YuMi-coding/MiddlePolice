@@ -22,4 +22,16 @@ sudo ethtool -K enp4s0f1 tx-gre-segmentation off &&
 sudo ethtool -K enp6s0f0 tx-gre-segmentation off &&
 sudo ethtool -K enp6s0f1 tx-gre-segmentation off &&
 sudo ethtool -K enp6s0f2 tx-gre-segmentation off &&
-sudo ethtool -K enp6s0f3 tx-gre-segmentation off
+sudo ethtool -K enp6s0f3 tx-gre-segmentation off &&
+sudo ethtool -K enp4s0f0 rx-checksum off &&
+sudo ethtool -K enp4s0f1 rx-checksum off &&
+sudo ethtool -K enp6s0f0 rx-checksum off &&
+sudo ethtool -K enp6s0f1 rx-checksum off &&
+sudo ethtool -K enp6s0f2 rx-checksum off &&
+sudo ethtool -K enp6s0f3 rx-checksum off &&
+sudo ethtool -K enp4s0f0 tx-checksum-ipv4 off &&
+sudo ethtool -K enp4s0f1 tx-checksum-ipv4 off &&
+sudo ethtool -K enp6s0f0 tx-checksum-ipv4 off &&
+sudo ethtool -K enp6s0f1 tx-checksum-ipv4 off &&
+sudo ethtool -K enp6s0f2 tx-checksum-ipv4 off &&
+sudo ethtool -K enp6s0f3 tx-checksum-ipv4 off 
